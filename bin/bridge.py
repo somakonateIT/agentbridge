@@ -238,10 +238,10 @@ def cmd_recv(args):
         joins = [p for p in fresh if p.get("kind") == "join"]
         if fresh:
             for p in fresh: print(_render(p)); print("-" * 56)
-            return
+            return  # exit 0 — the harness surfaces this output and wakes the agent
         if now() >= deadline:
-            print("No new messages." if not args.wait else "Nothing arrived in %ds." % args.wait)
-            return
+            print("__BRIDGE_IDLE__ no messages in %ds (relaunch to keep listening)" % (args.wait or 0))
+            sys.exit(2)
         time.sleep(3)
 
 
