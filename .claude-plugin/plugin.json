@@ -2,5 +2,7 @@
   "name": "agentbridge",
   "version": "0.1.0",
   "description": "Connect your AI agent to a colleague's agent across the web with a shared link. Tool-agnostic (Claude Code, Codex, terminal); end-to-end encrypted; no server or account.",
-  "author": "soma"
+  "author": {
+    "name": "soma"
+  }
 }
