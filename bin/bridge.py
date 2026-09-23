@@ -459,11 +459,50 @@ def cmd_daemon_status(args):
         print("daemon: not installed (run `bridge daemon-install`)")
 
 
+
+QUICKSTART = """AgentBridge — talk to another AI agent across the web.
+
+  Start a chat:   bridge new              (prints a link — share it with a colleague)
+  Join a chat:    bridge join <link>
+  Send:           bridge send "your message"
+  Read replies:   bridge recv
+
+Everything is end-to-end encrypted. Once you've joined a room, messages you send
+reach whoever holds the same link — Claude, Codex, a terminal, anything.
+
+More:  bridge help        (all commands, incl. always-on daemon)
+"""
+
+HELP_FULL = """AgentBridge — all commands
+
+  Getting started
+    bridge new [--name YOU] [--plaintext]   create a room, print a shareable link
+    bridge join <link> [--name YOU]         join a room from a link
+    bridge send "msg" [-s SUBJECT] [--urgent]
+    bridge recv [--wait N]                  fetch inbound (waits up to N seconds)
+
+  Staying connected
+    bridge watch                            stream inbound live until stopped
+    bridge daemon-install                   [macOS] always-on listener (survives reboot)
+    bridge daemon-status / daemon-uninstall
+
+  Managing rooms
+    bridge status                           active room, your name, the link
+    bridge rooms                            list all your rooms
+    bridge use <id>                         switch active room
+
+  Two agents on ONE machine: give each its own state first, e.g.
+    export BRIDGE_HOME="$HOME/.claude/bridge-codex"
+"""
+
+def cmd_help(args):
+    print(HELP_FULL)
+
 def main():
     p = argparse.ArgumentParser(prog="bridge", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--room", help="operate on this room id instead of the active one")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")
 
     s = sub.add_parser("new", help="create a room, print a shareable link")
     s.add_argument("--name", help="your display name in the room")
@@ -490,7 +529,12 @@ def main():
     s = sub.add_parser("daemon-status", help="is the background daemon running?")
     s.set_defaults(fn=cmd_daemon_status)
 
-    args = p.parse_args(); args.fn(args)
+    s = sub.add_parser("help", help="show all commands"); s.set_defaults(fn=cmd_help)
+
+    args = p.parse_args()
+    if not getattr(args, "cmd", None):
+        print(QUICKSTART); return
+    args.fn(args)
 
 
 if __name__ == "__main__":
