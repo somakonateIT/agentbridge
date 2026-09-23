@@ -313,28 +313,43 @@ def cmd_recv(args):
     tid, room = cur(c, args.room)
     deadline = now() + (args.wait or 300)
     got = []
-    seen_ids = set(room.get("seen_ids", [])[-200:])
+    # Look back over a window (default 10 min) rather than trusting only the cursor,
+    # so a message that arrived between reads is never skipped. seen_ids dedupes so
+    # nothing is shown twice. --since overrides the window.
+    lookback = args.since if getattr(args, "since", None) else 600
+    room["since"] = min(int(room.get("since", now())), int(now() - lookback))
+    seen_ids = set(room.get("seen_ids", [])[-500:])
+    # 1) drain everything already in the window (fast, non-blocking poll)
+    batch = poll(tid, "%ds" % lookback if lookback else "all")
+    if not isinstance(batch, str):
+        for ev in batch:
+            if ev.get("event") != "message": continue
+            eid = ev.get("id")
+            if eid in seen_ids: continue
+            seen_ids.add(eid)
+            p = _decode_ev(room, ev)
+            if p is None: continue
+            got.append(p)
+            if p.get("kind") == "join": room["peer_seen"] = p.get("from")
+        room["since"] = int(now())
+    # 2) if asked to wait and nothing yet, stream for the first NEW one
     def on_msg(ev):
         eid = ev.get("id")
-        # advance cursor to the event's ts (NOT +1) so same-second siblings aren't skipped;
-        # dedupe by message id so we never re-show one across reconnects
         room["since"] = int(ev.get("time", room.get("since", 0)))
-        if eid in seen_ids:
-            return False
+        if eid in seen_ids: return False
         seen_ids.add(eid)
-        room["seen_ids"] = list(seen_ids)[-200:]
         p = _decode_ev(room, ev)
-        if p is None: return False   # my echo / undecryptable — keep listening
+        if p is None: return False
         got.append(p)
         if p.get("kind") == "join": room["peer_seen"] = p.get("from")
-        return True  # stop on first real inbound
-    while now() < deadline and not got:
+        return True
+    while (args.wait or 0) and now() < deadline and not got:
         res = stream(tid, room.get("since", "all"), on_msg, deadline)
-        if res == "__RATELIMIT__":
-            time.sleep(30); continue
+        if res == "__RATELIMIT__": time.sleep(30); continue
         if res in ("__ERR__", "timeout") and not got:
             if now() >= deadline: break
-            time.sleep(5)  # gentle reconnect — never hammer the relay
+            time.sleep(5)
+    room["seen_ids"] = list(seen_ids)[-500:]
     save(c)
     if got:
         for p in got: print(_render(p)); print("-" * 56)
@@ -553,7 +568,9 @@ def main():
     s.add_argument("message"); s.add_argument("-s", "--subject")
     s.add_argument("--urgent", action="store_true"); s.set_defaults(fn=cmd_send)
     s = sub.add_parser("recv", help="fetch new inbound messages")
-    s.add_argument("--wait", type=int, default=0, help="block up to N seconds"); s.set_defaults(fn=cmd_recv)
+    s.add_argument("--wait", type=int, default=0, help="block up to N seconds")
+    s.add_argument("--since", type=int, help="look back this many seconds (default 600)")
+    s.set_defaults(fn=cmd_recv)
     s = sub.add_parser("watch", help="stream inbound until stopped")
     s.add_argument("--interval", type=float, default=5.0); s.set_defaults(fn=cmd_watch)
     s = sub.add_parser("daemon", help="background: poll inbound into a log file")
