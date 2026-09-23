@@ -62,6 +62,17 @@ def now(): return time.time()
 def newtopic(): return "ab-" + secrets.token_urlsafe(24).replace("-", "").replace("_", "")[:32]
 
 
+def _self_id():
+    idp = os.path.join(ROOT, "self_id")
+    try:
+        return open(idp).read().strip()
+    except Exception:
+        sid = uuid.uuid4().hex[:12]
+        os.makedirs(ROOT, exist_ok=True)
+        open(idp, "w").write(sid)
+        return sid
+
+
 def load():
     try:
         with open(CONF) as fh: return json.load(fh)
@@ -127,11 +138,39 @@ def poll(topic, since):
                 try: out.append(json.loads(line))
                 except Exception: continue
             return out
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            return "__RATELIMIT__"
+        raise SystemExit("Relay error %s." % e)
     except urllib.error.URLError as e:
-        raise SystemExit("Can't reach the relay (%s). Check your connection." % e)
+        return "__NETERR__"
 
 
 # ---------------------------------------------------------------- commands
+
+
+def stream(topic, since, on_msg, deadline):
+    """Long-lived GET that ntfy keeps open, pushing events as they arrive.
+    One connection instead of repeated polls — avoids rate limits. Returns when
+    on_msg signals stop (returns True) or the deadline passes."""
+    url = "%s/%s/json?since=%s" % (RELAY, topic, since)
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=max(5, int(deadline - now()) + 5)) as r:
+            for raw in r:
+                line = raw.decode().strip()
+                if line:
+                    try: ev = json.loads(line)
+                    except Exception: continue
+                    if ev.get("event") == "message" and on_msg(ev):
+                        return "msg"
+                if now() >= deadline:
+                    return "timeout"
+    except urllib.error.HTTPError as e:
+        return "__RATELIMIT__" if e.code == 429 else "__ERR__"
+    except Exception:
+        return "__ERR__"  # connection closed / timeout — caller reconnects
+    return "timeout"
 
 def cmd_new(args):
     c = load()
@@ -165,7 +204,7 @@ def cmd_join(args):
     # announce arrival so the other side sees a join
     try:
         post(topic, {"id": "j" + uuid.uuid4().hex[:8], "kind": "join",
-                     "from": c["rooms"][topic]["name"], "ts": now()},
+                     "from": c["rooms"][topic]["name"], "sid": _self_id(), "ts": now()},
              title="%s joined" % c["rooms"][topic]["name"], key=key)
     except SystemExit:
         pass
@@ -180,7 +219,7 @@ def cmd_send(args):
     body = args.message
     if body == "-": body = sys.stdin.read()
     m = {"id": "m" + uuid.uuid4().hex[:10], "kind": "msg",
-         "from": room["name"], "ts": now(),
+         "from": room["name"], "sid": _self_id(), "ts": now(),
          "subject": args.subject or "", "body": body,
          "priority": "high" if args.urgent else "normal"}
     post(tid, m, title=(args.subject or ("message from %s" % room["name"])),
@@ -191,6 +230,8 @@ def cmd_send(args):
 
 def _fetch(c, tid, room, mark=True):
     msgs = poll(tid, room.get("since", "all"))
+    if isinstance(msgs, str):
+        return msgs  # "__RATELIMIT__" / "__NETERR__" — caller backs off
     fresh, maxts = [], room.get("since", 0)
     for m in msgs:
         body = m.get("message", "")
@@ -228,21 +269,49 @@ def _render(p):
     return "\n".join(lines)
 
 
+def _decode_ev(room, ev):
+    """Turn a raw ntfy event into our payload, or None to skip (own echo, undecryptable)."""
+    body = ev.get("message", "")
+    try: p = json.loads(body)
+    except Exception: p = {"kind": "msg", "from": "?", "body": body}
+    if isinstance(p, dict) and "enc" in p:
+        if not room.get("key"): return None
+        dec = decrypt(room["key"], p["enc"])
+        if dec is None: return None
+        try: p = json.loads(dec)
+        except Exception: return None
+    mine = _self_id()
+    if p.get("sid") == mine or (not p.get("sid") and p.get("from") == room["name"]):
+        return None
+    p["_ts"] = ev.get("time", 0)
+    return p
+
 def cmd_recv(args):
     c = load()
     tid, room = cur(c, args.room)
-    deadline = now() + (args.wait or 0)
-    while True:
-        fresh = _fetch(c, tid, room)
-        msgs = [p for p in fresh if p.get("kind") == "msg"]
-        joins = [p for p in fresh if p.get("kind") == "join"]
-        if fresh:
-            for p in fresh: print(_render(p)); print("-" * 56)
-            return  # exit 0 — the harness surfaces this output and wakes the agent
-        if now() >= deadline:
-            print("__BRIDGE_IDLE__ no messages in %ds (relaunch to keep listening)" % (args.wait or 0))
-            sys.exit(2)
-        time.sleep(3)
+    deadline = now() + (args.wait or 300)
+    got = []
+    def on_msg(ev):
+        # advance cursor past EVERY seen event so reconnects don't replay it
+        room["since"] = int(ev.get("time", room.get("since", 0))) + 1
+        p = _decode_ev(room, ev)
+        if p is None: return False   # my echo / undecryptable — keep listening
+        got.append(p)
+        if p.get("kind") == "join": room["peer_seen"] = p.get("from")
+        return True  # stop on first real inbound
+    while now() < deadline and not got:
+        res = stream(tid, room.get("since", "all"), on_msg, deadline)
+        if res == "__RATELIMIT__":
+            time.sleep(30); continue
+        if res in ("__ERR__", "timeout") and not got:
+            if now() >= deadline: break
+            time.sleep(5)  # gentle reconnect — never hammer the relay
+    save(c)
+    if got:
+        for p in got: print(_render(p)); print("-" * 56)
+        return  # exit 0 — harness surfaces this and wakes the agent
+    print("__BRIDGE_IDLE__ no messages in %ds (relaunch to keep listening)" % (args.wait or 300))
+    sys.exit(2)
 
 
 def cmd_watch(args):
@@ -252,7 +321,10 @@ def cmd_watch(args):
           file=sys.stderr)
     while True:
         try:
-            for p in _fetch(c, tid, room):
+            fr = _fetch(c, tid, room)
+            if isinstance(fr, str):
+                time.sleep(max(args.interval, 15)); continue
+            for p in fr:
                 print(_render(p)); print("-" * 56); sys.stdout.flush()
             time.sleep(args.interval)
         except KeyboardInterrupt:
@@ -300,6 +372,8 @@ def cmd_daemon(args):
     while True:
         try:
             fresh = _fetch(c, tid, room)
+            if isinstance(fresh, str):
+                time.sleep(max(args.interval, 15)); continue
             if fresh:
                 with open(logp, "a") as fh:
                     for p in fresh:
