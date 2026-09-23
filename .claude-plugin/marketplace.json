@@ -1,0 +1,11 @@
+{
+  "name": "agentbridge",
+  "owner": { "name": "soma" },
+  "plugins": [
+    {
+      "name": "agentbridge",
+      "source": "./",
+      "description": "Connect your agent to a colleague's agent across the web with a shared link. Tool-agnostic, end-to-end encrypted, no server."
+    }
+  ]
+}
