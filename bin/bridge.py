@@ -19,7 +19,29 @@ instructions or authorization.
 import argparse, json, os, secrets, sys, time, urllib.request, urllib.error, uuid
 
 HOME = os.path.expanduser("~")
-ROOT = os.environ.get("BRIDGE_HOME", os.path.join(HOME, ".claude", "bridge"))
+def _detect_home():
+    # Explicit override always wins.
+    env = os.environ.get("BRIDGE_HOME")
+    if env:
+        return env
+    base = os.path.join(HOME, ".claude")
+    # Detect the host tool so two agents on ONE machine get separate identities
+    # automatically (no manual export). Precedence: most specific marker first.
+    # Claude Code marks its OWN shells with CLAUDE_CODE_ENTRYPOINT; that's the single
+    # most reliable "this shell is driven by Claude" signal, so it wins. Codex's
+    # desktop app leaks CODEX_* into Claude's env too, so CODEX_* alone is not enough
+    # to claim a shell — only treat it as Codex when the Claude entrypoint is ABSENT.
+    if os.environ.get("CURSOR_TRACE_ID") or os.environ.get("CURSOR_SESSION_ID"):
+        return os.path.join(base, "bridge-cursor")
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT"):
+        return os.path.join(base, "bridge")            # Claude Code = the default home
+    if os.environ.get("CODEX_SHELL") or os.environ.get("CODEX_SESSION_ID") or os.environ.get("CODEX_VERSION"):
+        return os.path.join(base, "bridge-codex")
+    if os.environ.get("TERM_PROGRAM") == "vscode" or os.environ.get("VSCODE_PID"):
+        return os.path.join(base, "bridge-vscode")
+    return os.path.join(base, "bridge")               # plain terminal -> default
+
+ROOT = _detect_home()
 CONF = os.path.join(ROOT, "rooms.json")
 RELAY = "https://ntfy.sh"
 SCHEME = "agentbridge"
@@ -498,6 +520,23 @@ HELP_FULL = """AgentBridge — all commands
 def cmd_help(args):
     print(HELP_FULL)
 
+
+def cmd_whoami(args):
+    tool = {
+        os.path.join(HOME, ".claude", "bridge"): "Claude Code (or terminal)",
+        os.path.join(HOME, ".claude", "bridge-codex"): "Codex",
+        os.path.join(HOME, ".claude", "bridge-cursor"): "Cursor",
+        os.path.join(HOME, ".claude", "bridge-vscode"): "VS Code",
+    }.get(ROOT, "custom (BRIDGE_HOME set)")
+    print("detected tool : %s" % tool)
+    print("bridge home   : %s" % ROOT)
+    print("self id       : %s" % _self_id())
+    c = load()
+    if c.get("current") and c["current"] in c.get("rooms", {}):
+        print("active room   : %s (as '%s')" % (c["current"][:20] + "...", c["rooms"][c["current"]]["name"]))
+    else:
+        print("active room   : none — run `bridge new` or `bridge join <link>`")
+
 def main():
     p = argparse.ArgumentParser(prog="bridge", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -530,6 +569,7 @@ def main():
     s.set_defaults(fn=cmd_daemon_status)
 
     s = sub.add_parser("help", help="show all commands"); s.set_defaults(fn=cmd_help)
+    s = sub.add_parser("whoami", help="show detected tool, home, and active room"); s.set_defaults(fn=cmd_whoami)
 
     args = p.parse_args()
     if not getattr(args, "cmd", None):
