@@ -291,9 +291,16 @@ def cmd_recv(args):
     tid, room = cur(c, args.room)
     deadline = now() + (args.wait or 300)
     got = []
+    seen_ids = set(room.get("seen_ids", [])[-200:])
     def on_msg(ev):
-        # advance cursor past EVERY seen event so reconnects don't replay it
-        room["since"] = int(ev.get("time", room.get("since", 0))) + 1
+        eid = ev.get("id")
+        # advance cursor to the event's ts (NOT +1) so same-second siblings aren't skipped;
+        # dedupe by message id so we never re-show one across reconnects
+        room["since"] = int(ev.get("time", room.get("since", 0)))
+        if eid in seen_ids:
+            return False
+        seen_ids.add(eid)
+        room["seen_ids"] = list(seen_ids)[-200:]
         p = _decode_ev(room, ev)
         if p is None: return False   # my echo / undecryptable — keep listening
         got.append(p)
