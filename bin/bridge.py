@@ -331,8 +331,13 @@ def cmd_watch(args):
             fr = _fetch(c, tid, room)
             if isinstance(fr, str):
                 time.sleep(max(args.interval, 15)); continue
-            for p in fr:
-                print(_render(p)); print("-" * 56); sys.stdout.flush()
+            if fr:
+                logp = os.path.join(ROOT, "inbox.log")
+                with open(logp, "a") as lf:
+                    for p in fr:
+                        lf.write(json.dumps({"at": now(), "room": tid, **p}) + "\n")
+                for p in fr:
+                    print(_render(p)); print("-" * 56); sys.stdout.flush()
             time.sleep(args.interval)
         except KeyboardInterrupt:
             print("\nstopped", file=sys.stderr); return
@@ -395,6 +400,65 @@ def cmd_daemon(args):
             time.sleep(args.interval)  # transient relay hiccup — keep going
 
 
+
+LAUNCHD_LABEL = "com.agentbridge.listener"
+LAUNCHD_PATH = os.path.join(os.path.expanduser("~"), "Library", "LaunchAgents", LAUNCHD_LABEL + ".plist")
+
+def _bridge_entrypoint():
+    # absolute path to THIS script, so the daemon runs the same code
+    return os.path.abspath(__file__)
+
+def cmd_daemon_install(args):
+    import platform, subprocess as sp
+    if platform.system() != "Darwin":
+        raise SystemExit("daemon-install is macOS-only for now. On Windows/Linux run "
+                         "`bridge watch` in a startup task instead (same effect).")
+    py = sys.executable
+    entry = _bridge_entrypoint()
+    log = os.path.join(ROOT, "daemon.log")
+    home = ROOT
+    plist = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>%s</string>
+  <key>ProgramArguments</key><array>
+    <string>%s</string><string>%s</string><string>watch</string>
+    <string>--interval</string><string>5</string>
+  </array>
+  <key>EnvironmentVariables</key><dict><key>BRIDGE_HOME</key><string>%s</string></dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>%s</string>
+  <key>StandardErrorPath</key><string>%s</string>
+</dict></plist>
+""" % (LAUNCHD_LABEL, py, entry, home, log, log)
+    os.makedirs(os.path.dirname(LAUNCHD_PATH), exist_ok=True)
+    with open(LAUNCHD_PATH, "w") as fh: fh.write(plist)
+    sp.run(["launchctl", "unload", LAUNCHD_PATH], capture_output=True)
+    r = sp.run(["launchctl", "load", LAUNCHD_PATH], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit("launchctl load failed:\n" + r.stderr)
+    print("AgentBridge daemon installed and running (label %s)." % LAUNCHD_LABEL)
+    print("It watches your active room and logs inbound to %s" % os.path.join(ROOT, "daemon.log"))
+    print("It survives reboots. Stop it with:  bridge daemon-uninstall")
+
+def cmd_daemon_uninstall(args):
+    import subprocess as sp
+    sp.run(["launchctl", "unload", LAUNCHD_PATH], capture_output=True)
+    try: os.remove(LAUNCHD_PATH)
+    except OSError: pass
+    print("AgentBridge daemon stopped and removed.")
+
+def cmd_daemon_status(args):
+    import subprocess as sp
+    r = sp.run(["launchctl", "list", LAUNCHD_LABEL], capture_output=True, text=True)
+    if r.returncode == 0:
+        print("daemon: RUNNING")
+        print(r.stdout.strip()[:400])
+    else:
+        print("daemon: not installed (run `bridge daemon-install`)")
+
+
 def main():
     p = argparse.ArgumentParser(prog="bridge", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -419,6 +483,12 @@ def main():
     s = sub.add_parser("rooms", help="list rooms"); s.set_defaults(fn=cmd_rooms)
     s = sub.add_parser("use", help="switch active room"); s.add_argument("room"); s.set_defaults(fn=cmd_use)
     s = sub.add_parser("status", help="show active room"); s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("daemon-install", help="[macOS] run a background listener that survives reboots")
+    s.set_defaults(fn=cmd_daemon_install)
+    s = sub.add_parser("daemon-uninstall", help="stop and remove the background daemon")
+    s.set_defaults(fn=cmd_daemon_uninstall)
+    s = sub.add_parser("daemon-status", help="is the background daemon running?")
+    s.set_defaults(fn=cmd_daemon_status)
 
     args = p.parse_args(); args.fn(args)
 

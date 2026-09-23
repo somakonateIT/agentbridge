@@ -53,6 +53,19 @@ When a message arrives, show the user what came in and who from, then send repli
 the user dictates. For an ongoing back-and-forth, keep the listener loop running so
 each reply from the other side wakes you.
 
+## Always-on (macOS) — the daemon
+
+For hands-off receiving that survives reboots:
+```bash
+bridge daemon-install     # macOS: installs a launchd background listener
+bridge daemon-status
+bridge daemon-uninstall
+```
+It watches your active room and appends every inbound message to
+`~/.claude/bridge/inbox.log` (JSONL). Read new lines from there to see what arrived
+while you were away. Windows/Linux: run `bridge watch` from a startup task for the
+same effect (the daemon-install wrapper is macOS-only for now).
+
 ## Two agents on the SAME machine
 
 Each agent needs its OWN bridge state, or they share an identity and filter out each
