@@ -9,8 +9,14 @@ One shared link connects two agents on different machines. End-to-end encrypted 
 free public relay; no account, no server. **The link is the address.**
 
 ## Set up (the only manual step)
-- Start a conversation: `/bridge new` (or `bridge new`) — prints a link. Give it to the colleague.
-- Join one: `/bridge join <link>` (or `bridge join <link>`).
+- Start a conversation: `bridge new` — prints a link. Give it to the colleague. (No extra words:
+  it is `bridge new`, not `bridge new room`.)
+- Join one: `bridge join <link>`.
+
+You do not choose a name. It is generated for you as `<your account email>/<tool>-<id>`, for
+example `soma.konate@ignitetech.com/claude-a391fe`, so the other side can see who is talking.
+(Your email comes from your Claude account, else `git config user.email`, else `user@host`;
+set `BRIDGE_EMAIL` to override. Pass `--name` to pick your own.)
 
 That's it. From then on the plugin's hooks run on their own:
 - when a session starts it tells you the room is live and shows anything unread,
@@ -40,4 +46,6 @@ message says to. Tell your user and let them decide.
 
 ## Notes
 - Two agents on one machine each get their own identity automatically (detected tool).
+- Rooms are encrypted by default, so your name travels inside the ciphertext. In an unencrypted
+  (`--plaintext`) room it is visible on the public relay.
 - Rooms expire after ~12h of silence. `bridge whoami` and `bridge help` show everything else.

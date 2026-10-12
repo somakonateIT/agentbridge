@@ -95,6 +95,77 @@ def _self_id():
         return sid
 
 
+
+def _seen_path(tid):
+    return os.path.join(ROOT, "seen-%s.json" % tid[:16])
+
+
+def _claim(tid, eid):
+    """Atomically mark an event as delivered. Returns True only for the FIRST caller,
+    across every process (manual recv, session hooks, the wake listener). This is what
+    stops one message being delivered twice."""
+    os.makedirs(ROOT, exist_ok=True)
+    with open(_seen_path(tid) + ".lock", "a+") as lf:
+        try:
+            import fcntl
+            fcntl.flock(lf, fcntl.LOCK_EX)
+        except Exception:
+            pass  # no fcntl (Windows): best effort without the lock
+        try:
+            with open(_seen_path(tid)) as fh:
+                ids = json.load(fh)
+        except Exception:
+            ids = []
+        if eid in ids:
+            return False
+        ids.append(eid)
+        tmp = _seen_path(tid) + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(ids[-1000:], fh)
+        os.replace(tmp, _seen_path(tid))
+        return True
+
+
+def _account_email():
+    """Best available identity for this person: explicit override, Claude Code account,
+    then git, then user@host. Credentials files are never read."""
+    e = os.environ.get("BRIDGE_EMAIL")
+    if e:
+        return e.strip()
+    try:
+        with open(os.path.join(HOME, ".claude.json")) as fh:
+            e = (json.load(fh).get("oauthAccount") or {}).get("emailAddress")
+        if e:
+            return e
+    except Exception:
+        pass
+    try:
+        import subprocess
+        r = subprocess.run(["git", "config", "--global", "user.email"],
+                           capture_output=True, text=True, timeout=5)
+        if r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+    try:
+        import getpass, socket
+        return "%s@%s" % (getpass.getuser(), socket.gethostname().split(".")[0])
+    except Exception:
+        return "agent"
+
+
+def _tool_label():
+    return {os.path.join(HOME, ".claude", "bridge"): "claude",
+            os.path.join(HOME, ".claude", "bridge-codex"): "codex",
+            os.path.join(HOME, ".claude", "bridge-cursor"): "cursor",
+            os.path.join(HOME, ".claude", "bridge-vscode"): "vscode"}.get(ROOT, "agent")
+
+
+def autoname():
+    """e.g. soma.konate@ignitetech.com/claude-a391fe: who it is, which tool, which install."""
+    return "%s/%s-%s" % (_account_email(), _tool_label(), _self_id()[:6])
+
+
 def load():
     try:
         with open(CONF) as fh: return json.load(fh)
@@ -198,7 +269,7 @@ def cmd_new(args):
     c = load()
     topic = newtopic()
     key = None if args.plaintext else secrets.token_urlsafe(24)
-    c["rooms"][topic] = {"topic": topic, "name": args.name or "me", "key": key,
+    c["rooms"][topic] = {"topic": topic, "name": args.name or autoname(), "key": key,
                          "created": now(), "since": int(now()), "peer_seen": None}
     c["current"] = topic
     save(c)
@@ -217,7 +288,7 @@ def cmd_new(args):
 def cmd_join(args):
     c = load()
     topic, key = parse_link(args.link)
-    c["rooms"].setdefault(topic, {"topic": topic, "name": args.name or "me", "key": key,
+    c["rooms"].setdefault(topic, {"topic": topic, "name": args.name or autoname(), "key": key,
                                   "created": now(), "since": int(now()), "peer_seen": None})
     if args.name: c["rooms"][topic]["name"] = args.name
     c["rooms"][topic]["key"] = key
@@ -227,7 +298,7 @@ def cmd_join(args):
     try:
         post(topic, {"id": "j" + uuid.uuid4().hex[:8], "kind": "join",
                      "from": c["rooms"][topic]["name"], "sid": _self_id(), "ts": now()},
-             title="%s joined" % c["rooms"][topic]["name"], key=key)
+             title="AgentBridge join", key=key)
     except SystemExit:
         pass
     enc = "encrypted" if key else "UNENCRYPTED"
@@ -244,7 +315,7 @@ def cmd_send(args):
          "from": room["name"], "sid": _self_id(), "ts": now(),
          "subject": args.subject or "", "body": body,
          "priority": "high" if args.urgent else "normal"}
-    post(tid, m, title=(args.subject or ("message from %s" % room["name"])),
+    post(tid, m, title=(args.subject or "AgentBridge message"),
          urgent=args.urgent, key=room.get("key"))
     print("sent to room (%s)." % (room.get("name") and tid[:12] + "..."))
     print("Your colleague's agent sees it when their side runs `bridge recv` or is watching.")
@@ -314,19 +385,16 @@ def cmd_recv(args):
     deadline = now() + (args.wait or 300)
     got = []
     # Look back over a window (default 10 min) rather than trusting only the cursor,
-    # so a message that arrived between reads is never skipped. seen_ids dedupes so
+    # so a message that arrived between reads is never skipped. _claim() dedupes so
     # nothing is shown twice. --since overrides the window.
     lookback = args.since if getattr(args, "since", None) else 600
     room["since"] = min(int(room.get("since", now())), int(now() - lookback))
-    seen_ids = set(room.get("seen_ids", [])[-500:])
     # 1) drain everything already in the window (fast, non-blocking poll)
     batch = poll(tid, "%ds" % lookback if lookback else "all")
     if not isinstance(batch, str):
         for ev in batch:
             if ev.get("event") != "message": continue
-            eid = ev.get("id")
-            if eid in seen_ids: continue
-            seen_ids.add(eid)
+            if not _claim(tid, ev.get("id")): continue
             p = _decode_ev(room, ev)
             if p is None: continue
             got.append(p)
@@ -334,10 +402,8 @@ def cmd_recv(args):
         room["since"] = int(now())
     # 2) if asked to wait and nothing yet, stream for the first NEW one
     def on_msg(ev):
-        eid = ev.get("id")
         room["since"] = int(ev.get("time", room.get("since", 0)))
-        if eid in seen_ids: return False
-        seen_ids.add(eid)
+        if not _claim(tid, ev.get("id")): return False
         p = _decode_ev(room, ev)
         if p is None: return False
         got.append(p)
@@ -349,7 +415,6 @@ def cmd_recv(args):
         if res in ("__ERR__", "timeout") and not got:
             if now() >= deadline: break
             time.sleep(5)
-    room["seen_ids"] = list(seen_ids)[-500:]
     save(c)
     if got:
         for p in got: print(_render(p)); print("-" * 56)
@@ -599,7 +664,6 @@ def _self_install_shim():
 
 def _drain(c, tid, room, lookback=600):
     """All unread inbound in the window, deduped by id. Never raises."""
-    seen = set(room.get("seen_ids", [])[-500:])
     out = []
     batch = poll(tid, "%ds" % lookback)
     if isinstance(batch, str):
@@ -607,17 +671,14 @@ def _drain(c, tid, room, lookback=600):
     for ev in batch:
         if ev.get("event") != "message":
             continue
-        eid = ev.get("id")
-        if eid in seen:
+        if not _claim(tid, ev.get("id")):
             continue
-        seen.add(eid)
         p = _decode_ev(room, ev)
         if p is None:
             continue
         if p.get("kind") == "join":
             room["peer_seen"] = p.get("from")
         out.append(p)
-    room["seen_ids"] = list(seen)[-500:]
     room["since"] = int(now())
     save(c)
     return out
@@ -694,14 +755,10 @@ def cmd_listen(args):
     try:
         got = [p for p in _drain(c, tid, room, 120) if p.get("kind") == "msg"]
         deadline = now() + args.wait
-        seen = set(room.get("seen_ids", []))
-
         def on_msg(ev):
-            eid = ev.get("id")
             room["since"] = int(ev.get("time", room.get("since", 0)))
-            if eid in seen:
+            if not _claim(tid, ev.get("id")):
                 return False
-            seen.add(eid)
             p = _decode_ev(room, ev)
             if p is None or p.get("kind") != "msg":
                 return False
@@ -714,7 +771,6 @@ def cmd_listen(args):
                 time.sleep(30)
             elif not got:
                 time.sleep(5)
-        room["seen_ids"] = list(seen)[-500:]
         save(c)
         if got:
             print("From the other agent in your AgentBridge room:")
@@ -770,7 +826,12 @@ def main():
     s.add_argument("--wait", type=int, default=3300); s.set_defaults(fn=cmd_listen)
     s = sub.add_parser("whoami", help="show detected tool, home, and active room"); s.set_defaults(fn=cmd_whoami)
 
-    args = p.parse_args()
+    argv = sys.argv[1:]
+    if len(argv) >= 2 and argv[0] == "room" and argv[1] in ("new", "join"):
+        argv = argv[1:]
+    if len(argv) >= 2 and argv[0] in ("new", "join") and argv[1] == "room":
+        argv = [argv[0]] + argv[2:]
+    args = p.parse_args(argv)
     if not getattr(args, "cmd", None):
         print(QUICKSTART); return
     args.fn(args)

@@ -49,6 +49,10 @@ can read them.
 
 ## Notes
 
+- **Names are automatic**: `<your email>/<tool>-<id>` (e.g. `you@company.com/claude-a391fe`). The
+  other agent sees it. Email comes from your Claude account, else `git config user.email`;
+  override with `BRIDGE_EMAIL`, or pass `--name`.
+
 - **Two agents on one machine?** Give each its own state:
   `export BRIDGE_HOME="$HOME/.claude/bridge-<name>"` before joining.
 - Rooms go quiet after ~12h of silence (it's a live channel, not a mailbox).
