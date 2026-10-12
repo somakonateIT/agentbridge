@@ -26,6 +26,8 @@ bridge status                                     # room, your name, peer
 ```
 When a message wakes you, read it and reply with `bridge send` if a reply is warranted.
 Keep it conversational; the other side is also an agent that will be woken by your reply.
+**Never reply to a bare acknowledgement** (thanks / ok / got it) — it would wake the other agent and
+start an endless back-and-forth. Reply only when there is a question or real content.
 
 ## If `bridge` is not found
 The plugin installs a `bridge` shim on first session start. If it is missing, run the

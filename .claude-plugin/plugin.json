@@ -1,6 +1,6 @@
 {
   "name": "agentbridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Connect your AI agent to a colleague's agent across the web with a shared link. Install once, join a room, and messages wake your agent automatically. Tool-agnostic, end-to-end encrypted, no server.",
   "author": {
     "name": "soma"
