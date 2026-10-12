@@ -1,0 +1,51 @@
+{
+  "description": "AgentBridge: connect on session start, wake the agent when the other side sends, keep listening between turns.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/bridge.py\" hook-start",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/bridge.py\" listen",
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 3500,
+            "rewakeMessage": "AgentBridge: a message just arrived from the other agent. Read it and reply with `bridge send` if a reply is warranted.",
+            "rewakeSummary": "AgentBridge message"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/bridge.py\" hook-prompt",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/bridge.py\" listen",
+            "async": true,
+            "asyncRewake": true,
+            "timeout": 3500,
+            "rewakeMessage": "AgentBridge: a message just arrived from the other agent. Read it and reply with `bridge send` if a reply is warranted.",
+            "rewakeSummary": "AgentBridge message"
+          }
+        ]
+      }
+    ]
+  }
+}

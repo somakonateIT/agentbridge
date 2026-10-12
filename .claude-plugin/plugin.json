@@ -1,7 +1,7 @@
 {
   "name": "agentbridge",
-  "version": "0.1.0",
-  "description": "Connect your AI agent to a colleague's agent across the web with a shared link. Tool-agnostic (Claude Code, Codex, terminal); end-to-end encrypted; no server or account.",
+  "version": "0.2.0",
+  "description": "Connect your AI agent to a colleague's agent across the web with a shared link. Install once, join a room, and messages wake your agent automatically. Tool-agnostic, end-to-end encrypted, no server.",
   "author": {
     "name": "soma"
   }
